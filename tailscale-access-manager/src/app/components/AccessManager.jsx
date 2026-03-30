@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, useReducer } from "react";
 
 /* ════════════════════════════════════════════════════
    TAILSCALE ACCESS MANAGER — Security-Hardened
@@ -610,6 +610,35 @@ function reducer(state, action) {
         ),
       };
     }
+
+    case "ADD_NODE":
+      return {
+        ...state,
+        nodes: [...state.nodes, { ...action.payload, id: action.payload.name.toLowerCase().replace(/[^a-z0-9-]/g, "-") }],
+        toast: { message: `Node '${action.payload.name}' added`, kind: "success" },
+      };
+
+    case "DELETE_NODE":
+      return {
+        ...state,
+        nodes: state.nodes.filter((n) => n.id !== action.id),
+        containers: state.containers.filter((c) => c.node !== action.id),
+        toast: { message: `Node deleted`, kind: "success" },
+      };
+
+    case "ADD_CONTAINER":
+      return {
+        ...state,
+        containers: [...state.containers, { ...action.payload, id: `${action.payload.kind || "ct"}${action.payload.vmid}` }],
+        toast: { message: `Container '${action.payload.name}' added`, kind: "success" },
+      };
+
+    case "DELETE_CONTAINER":
+      return {
+        ...state,
+        containers: state.containers.filter((c) => c.id !== action.id),
+        toast: { message: `Container deleted`, kind: "success" },
+      };
 
     case "SET_MODAL":
       return { ...state, modal: action.payload };
@@ -2093,6 +2122,10 @@ function AuditLog({ entries }) {
 function InfrastructureView({ nodes, containers, dispatch }) {
   const [editing, setEditing] = useState(null);
   const [ipError, setIpError] = useState(null);
+  const [showAddNode, setShowAddNode] = useState(false);
+  const [showAddContainer, setShowAddContainer] = useState(null); // nodeId or null
+  const [newNode, setNewNode] = useState({ name: "", ip: "", status: "online" });
+  const [newContainer, setNewContainer] = useState({ name: "", ip: "", vmid: "", kind: "ct", critical: false });
 
   const statusColor = (status) =>
     status === "online"
@@ -2179,89 +2212,160 @@ function InfrastructureView({ nodes, containers, dispatch }) {
     );
   };
 
+  const inputStyle = {
+    fontSize: 12, padding: "4px 8px", background: "#fff", border: `1px solid ${THEME.colors.borderInput}`,
+    borderRadius: 4, color: THEME.colors.text, width: "100%",
+  };
+
+  const smallBtnStyle = (color) => ({
+    fontSize: 10, padding: "2px 8px", border: "none", borderRadius: 3,
+    cursor: "pointer", fontWeight: 600, color: "#fff", background: color,
+  });
+
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
-      {nodes.map((node) => {
-        const nodeContainers = containers.filter((c) => c.node === node.id);
-        const isPlanned = node.status === "planned";
+    <div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
+        {nodes.map((node) => {
+          const nodeContainers = containers.filter((c) => c.node === node.id || c.nodeId === node.id);
+          const isPlanned = node.status === "planned";
 
-        return (
-          <div
-            key={node.id}
-            style={{
-              background: isPlanned ? THEME.colors.purpleBg : THEME.colors.surface,
-              border: `1px ${isPlanned ? "dashed" : "solid"} ${isPlanned ? THEME.colors.purpleBorder : THEME.colors.border}`,
-              borderRadius: THEME.radii.xl,
-              padding: 14,
-            }}
-          >
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-              <span style={{ color: statusColor(node.status) }}><Icon name="server" /></span>
-              <span style={{ fontWeight: 700, fontSize: 14, color: THEME.colors.text }}>{node.name}</span>
-              <span style={{ marginLeft: "auto" }}><StatusDot color={statusColor(node.status)} /></span>
-            </div>
-
-            <div style={{ marginBottom: 8 }}>{renderIPCell("node", node.id, node.ip)}</div>
-
+          return (
             <div
+              key={node.id}
               style={{
-                fontSize: 11,
-                color: THEME.colors.textFaint,
-                marginBottom: 6,
-                fontWeight: 600,
-                textTransform: "uppercase",
-                letterSpacing: ".04em",
+                background: isPlanned ? THEME.colors.purpleBg : THEME.colors.surface,
+                border: `1px ${isPlanned ? "dashed" : "solid"} ${isPlanned ? THEME.colors.purpleBorder : THEME.colors.border}`,
+                borderRadius: THEME.radii.xl,
+                padding: 14,
               }}
             >
-              {isPlanned ? "Coming soon" : `${nodeContainers.length} containers`}
-            </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                <span style={{ color: statusColor(node.status) }}><Icon name="server" /></span>
+                <span style={{ fontWeight: 700, fontSize: 14, color: THEME.colors.text }}>{node.name}</span>
+                <span style={{ marginLeft: "auto" }}>
+                  <StatusDot color={statusColor(node.status)} />
+                </span>
+              </div>
 
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {nodeContainers.map((ct) => (
-                <div
-                  key={ct.id}
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    padding: "5px 8px",
-                    background: ct.critical ? THEME.colors.warningBg : "#f9fafb",
-                    borderRadius: 5,
-                    fontSize: 12,
-                    border: `1px solid ${ct.critical ? THEME.colors.warningBorder : "#f3f0eb"}`,
-                  }}
-                >
-                  <span
-                    style={{
-                      fontSize: 10,
-                      fontWeight: 700,
-                      color: ct.kind === "vm" ? THEME.colors.purple : THEME.colors.textFaint,
-                      textTransform: "uppercase",
-                      minWidth: 20,
-                    }}
-                  >
-                    {ct.kind === "vm" ? "VM" : "CT"}
-                  </span>
-                  <span style={{ fontWeight: 600, color: THEME.colors.textSecondary, minWidth: 32 }}>{ct.vmid}</span>
-                  <span style={{ color: ct.critical ? THEME.colors.warning : THEME.colors.textMuted, flex: 1 }}>
-                    {ct.name}
-                    {PROTECTED_CONTAINERS.includes(ct.id) && (
-                      <span style={{ fontSize: 9, color: THEME.colors.danger, marginLeft: 4, fontWeight: 700 }}>🔒</span>
-                    )}
-                  </span>
-                  {renderIPCell("ct", ct.id, ct.ip)}
-                  {ct.critical && <span style={{ fontSize: 9, color: THEME.colors.warning, fontWeight: 700 }}>CRIT</span>}
-                </div>
-              ))}
-              {nodeContainers.length === 0 && (
-                <div style={{ fontSize: 12, color: THEME.colors.purpleText, fontStyle: "italic", padding: "8px 0" }}>
-                  No containers yet
+              <div style={{ marginBottom: 8 }}>{renderIPCell("node", node.id, node.ip)}</div>
+
+              <div
+                style={{
+                  fontSize: 11, color: THEME.colors.textFaint, marginBottom: 6,
+                  fontWeight: 600, textTransform: "uppercase", letterSpacing: ".04em",
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                }}
+              >
+                <span>{isPlanned ? "Coming soon" : `${nodeContainers.length} containers`}</span>
+                <button onClick={() => { setShowAddContainer(showAddContainer === node.id ? null : node.id); setNewContainer({ name: "", ip: "", vmid: "", kind: "ct", critical: false }); }}
+                  style={smallBtnStyle(THEME.colors.primary)}>+ Add</button>
+              </div>
+
+              {showAddContainer === node.id && (
+                <div style={{ background: "#f0f4ff", padding: 10, borderRadius: 6, marginBottom: 8, border: `1px solid ${THEME.colors.borderInput}` }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 6 }}>
+                    <input placeholder="Name" value={newContainer.name} onChange={(e) => setNewContainer({ ...newContainer, name: e.target.value })} style={inputStyle} />
+                    <input placeholder="VMID" type="number" value={newContainer.vmid} onChange={(e) => setNewContainer({ ...newContainer, vmid: e.target.value })} style={inputStyle} />
+                    <input placeholder="IP (optional)" value={newContainer.ip} onChange={(e) => setNewContainer({ ...newContainer, ip: e.target.value })} style={inputStyle} />
+                    <select value={newContainer.kind} onChange={(e) => setNewContainer({ ...newContainer, kind: e.target.value })} style={inputStyle}>
+                      <option value="ct">Container (CT)</option>
+                      <option value="vm">Virtual Machine (VM)</option>
+                    </select>
+                  </div>
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <label style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}>
+                      <input type="checkbox" checked={newContainer.critical} onChange={(e) => setNewContainer({ ...newContainer, critical: e.target.checked })} /> Critical
+                    </label>
+                    <button onClick={() => {
+                      if (!newContainer.name || !newContainer.vmid) return alert("Name and VMID are required");
+                      dispatch({ type: "ADD_CONTAINER", payload: { ...newContainer, nodeId: node.id, vmid: parseInt(newContainer.vmid) } });
+                      setShowAddContainer(null);
+                      setNewContainer({ name: "", ip: "", vmid: "", kind: "ct", critical: false });
+                    }} style={smallBtnStyle(THEME.colors.success)}>Create</button>
+                    <button onClick={() => setShowAddContainer(null)} style={smallBtnStyle(THEME.colors.textFaint)}>Cancel</button>
+                  </div>
                 </div>
               )}
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {nodeContainers.map((ct) => (
+                  <div
+                    key={ct.id}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 6, padding: "5px 8px",
+                      background: ct.critical ? THEME.colors.warningBg : "#f9fafb",
+                      borderRadius: 5, fontSize: 12,
+                      border: `1px solid ${ct.critical ? THEME.colors.warningBorder : "#f3f0eb"}`,
+                    }}
+                  >
+                    <span style={{ fontSize: 10, fontWeight: 700, color: ct.kind === "vm" ? THEME.colors.purple : THEME.colors.textFaint, textTransform: "uppercase", minWidth: 20 }}>
+                      {ct.kind === "vm" ? "VM" : "CT"}
+                    </span>
+                    <span style={{ fontWeight: 600, color: THEME.colors.textSecondary, minWidth: 32 }}>{ct.vmid}</span>
+                    <span style={{ color: ct.critical ? THEME.colors.warning : THEME.colors.textMuted, flex: 1 }}>
+                      {ct.name}
+                      {PROTECTED_CONTAINERS.includes(ct.id) && (
+                        <span style={{ fontSize: 9, color: THEME.colors.danger, marginLeft: 4, fontWeight: 700 }}>🔒</span>
+                      )}
+                    </span>
+                    {renderIPCell("ct", ct.id, ct.ip)}
+                    {ct.critical && <span style={{ fontSize: 9, color: THEME.colors.warning, fontWeight: 700 }}>CRIT</span>}
+                    <button
+                      onClick={() => { if (confirm(`Delete '${ct.name}'?`)) dispatch({ type: "DELETE_CONTAINER", id: ct.id }); }}
+                      style={{ ...smallBtnStyle(THEME.colors.danger), fontSize: 9, padding: "1px 5px" }}
+                      title="Delete container"
+                    >x</button>
+                  </div>
+                ))}
+                {nodeContainers.length === 0 && !showAddContainer && (
+                  <div style={{ fontSize: 12, color: THEME.colors.purpleText, fontStyle: "italic", padding: "8px 0" }}>
+                    No containers yet
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+
+        {/* Add Node Card */}
+        {!showAddNode ? (
+          <div
+            onClick={() => setShowAddNode(true)}
+            style={{
+              background: THEME.colors.surface, border: `2px dashed ${THEME.colors.borderInput}`,
+              borderRadius: THEME.radii.xl, padding: 14, cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              minHeight: 120, color: THEME.colors.textFaint, fontSize: 14, fontWeight: 600,
+            }}
+          >
+            + Add Node
+          </div>
+        ) : (
+          <div style={{
+            background: THEME.colors.surface, border: `1px solid ${THEME.colors.border}`,
+            borderRadius: THEME.radii.xl, padding: 14,
+          }}>
+            <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 10, color: THEME.colors.text }}>New Node</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              <input placeholder="Node name" value={newNode.name} onChange={(e) => setNewNode({ ...newNode, name: e.target.value })} style={inputStyle} />
+              <input placeholder="IP address (optional)" value={newNode.ip} onChange={(e) => setNewNode({ ...newNode, ip: e.target.value })} style={inputStyle} />
+              <select value={newNode.status} onChange={(e) => setNewNode({ ...newNode, status: e.target.value })} style={inputStyle}>
+                <option value="online">Online</option>
+                <option value="planned">Planned</option>
+              </select>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => {
+                  if (!newNode.name) return alert("Node name is required");
+                  dispatch({ type: "ADD_NODE", payload: newNode });
+                  setShowAddNode(false);
+                  setNewNode({ name: "", ip: "", status: "online" });
+                }} style={smallBtnStyle(THEME.colors.success)}>Create Node</button>
+                <button onClick={() => setShowAddNode(false)} style={smallBtnStyle(THEME.colors.textFaint)}>Cancel</button>
+              </div>
             </div>
           </div>
-        );
-      })}
+        )}
+      </div>
     </div>
   );
 }
@@ -2533,6 +2637,21 @@ export default function AccessManager({ initialState: externalState, actions: ap
           case "SET_IP":
             apiActions.setIP?.(action.kind, action.id, action.ip);
             break;
+          case "ADD_NODE":
+            apiActions.addNode?.(action.payload);
+            break;
+          case "DELETE_NODE":
+            apiActions.deleteNode?.(action.id);
+            break;
+          case "ADD_CONTAINER":
+            apiActions.addContainer?.(action.payload);
+            break;
+          case "DELETE_CONTAINER":
+            apiActions.deleteContainer?.(action.id);
+            break;
+          case "SYNC_PROXMOX":
+            apiActions.syncProxmox?.();
+            break;
           case "EMERGENCY_LOCKDOWN":
             apiActions.emergencyLockdown?.();
             break;
@@ -2710,10 +2829,18 @@ export default function AccessManager({ initialState: externalState, actions: ap
 
           {activeTab === "infra" && (
             <>
-              <p style={{ marginBottom: 14, fontSize: 13, color: THEME.colors.textMuted }}>
-                Proxmox 8.4.16 cluster — 2 active nodes + 1 planned. Click any IP placeholder to set
-                the real LAN address. Amber = critical infrastructure. 🔒 = protected (subnet router).
-              </p>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                <p style={{ fontSize: 13, color: THEME.colors.textMuted, margin: 0 }}>
+                  Proxmox infrastructure. Click any IP to edit. Amber = critical.
+                </p>
+                <button
+                  onClick={() => { secureDispatch({ type: "SYNC_PROXMOX" }); }}
+                  style={{
+                    fontSize: 12, padding: "6px 14px", background: THEME.colors.primary,
+                    color: "#fff", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 600,
+                  }}
+                >Sync from Proxmox</button>
+              </div>
               <InfrastructureView
                 nodes={state.nodes}
                 containers={state.containers}

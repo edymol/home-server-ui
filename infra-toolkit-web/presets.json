@@ -1,19 +1,15 @@
 {
   "keycloak_urls": [
-    "https://keycloak.example.com"
+    "http://localhost:8080"
   ],
   "keycloak_realms": [
-    "master",
-    "my-realm-1",
-    "my-realm"
+    "master"
   ],
   "keycloak_usernames": [
     "admin"
   ],
   "keycloak_passwords": [],
-  "jenkins_urls": [
-    "https://jenkins.example.com"
-  ],
+  "jenkins_urls": [],
   "jenkins_usernames": [
     "admin"
   ],
@@ -47,7 +43,8 @@
   ],
   "spa_urls": [
     "http://localhost:4200",
-    "https://invest.example.com"
+    "https://invest.example.com",
+    "http://localhost:3000/*"
   ],
   "git_repos": [
     "git@github.com:your-org/your-repo.git"
