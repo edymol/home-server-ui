@@ -13,8 +13,8 @@ async function apiFetch(url, options = {}) {
   });
 
   if (res.status === 401) {
-    window.location.href = "/api/auth/signin";
-    return null;
+    window.location.href = "/api/auth/signin?callbackUrl=" + encodeURIComponent(window.location.origin);
+    throw new Error("Redirecting to login...");
   }
 
   const data = await res.json();
@@ -88,6 +88,51 @@ export default function Home() {
 
     deleteRule: async (ruleId) => {
       await apiFetch(`/api/rules/${ruleId}`, { method: "DELETE" });
+      await loadData();
+    },
+
+    syncProxmox: async () => {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 60000);
+        const res = await fetch("/api/infra/sync", {
+          method: "POST",
+          signal: controller.signal,
+        });
+        clearTimeout(timeout);
+        if (res.ok) {
+          const data = await res.json();
+          console.log("Proxmox sync:", data);
+        }
+      } catch (e) {
+        console.log("Sync request finished (may have timed out on client, data still saved)");
+      }
+      await loadData();
+    },
+
+    addNode: async (payload) => {
+      await apiFetch("/api/infra/nodes", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      await loadData();
+    },
+
+    deleteNode: async (id) => {
+      await apiFetch(`/api/infra/nodes/${id}`, { method: "DELETE" });
+      await loadData();
+    },
+
+    addContainer: async (payload) => {
+      await apiFetch("/api/infra/containers", {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      await loadData();
+    },
+
+    deleteContainer: async (id) => {
+      await apiFetch(`/api/infra/containers/${id}`, { method: "DELETE" });
       await loadData();
     },
 

@@ -11,8 +11,8 @@ model User {
   id        String     @id @default(cuid())
   name      String
   email     String     @unique
-  role      Role       @default(DEVELOPER)
-  status    Status     @default(ACTIVE)
+  role      String     @default("DEVELOPER") // VIEWER, DEVELOPER, MAINTAINER, ADMIN
+  status    String     @default("ACTIVE") // ACTIVE, SUSPENDED, EXPIRED
   expiresAt DateTime?
   createdAt DateTime   @default(now())
   updatedAt DateTime   @updatedAt
@@ -24,7 +24,7 @@ model Rule {
   id         String     @id @default(cuid())
   userId     String
   user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
-  targetType TargetType
+  targetType String // NODE, LXC, ALL
   targetId   String
   ports      String     // JSON array: [22, 80, 443]
   createdAt  DateTime   @default(now())
@@ -52,7 +52,7 @@ model AuditLog {
   userId    String?
   user      User?    @relation("AuditUser", fields: [userId], references: [id], onDelete: SetNull)
   action    String
-  severity  Severity @default(INFO)
+  severity  String   @default("INFO") // INFO, WARN, ERROR
   metadata  String?
   ip        String?
   createdAt DateTime @default(now())
@@ -71,27 +71,3 @@ model AppState {
   value String
 }
 
-enum Role {
-  VIEWER
-  DEVELOPER
-  MAINTAINER
-  ADMIN
-}
-
-enum Status {
-  ACTIVE
-  SUSPENDED
-  EXPIRED
-}
-
-enum TargetType {
-  NODE
-  LXC
-  ALL
-}
-
-enum Severity {
-  INFO
-  WARN
-  ERROR
-}

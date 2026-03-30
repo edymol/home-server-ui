@@ -106,13 +106,21 @@ def start_job(cmd: str, env_extra: dict | None = None) -> str:
 
 def kc_token_snippet(url: str, user: str, password: str) -> str:
     return (
-        f'KC_TOKEN=$(curl -sf -X POST "{url}/realms/master/protocol/openid-connect/token" '
+        f'KC_RESPONSE=$(curl -s -X POST "{url}/realms/master/protocol/openid-connect/token" '
         f'-H "Content-Type: application/x-www-form-urlencoded" '
         f'-d "username={user}" '
         f'-d "password={password}" '
         f'-d "grant_type=password" '
         f'-d "client_id=admin-cli" '
-        f"| python3 -c \"import sys,json; print(json.load(sys.stdin)['access_token'])\")"
+        f'-w "\\n%{{http_code}}")\n'
+        f'KC_HTTP_CODE=$(echo "$KC_RESPONSE" | tail -1)\n'
+        f'KC_BODY=$(echo "$KC_RESPONSE" | sed \\$d)\n'
+        f'if [ "$KC_HTTP_CODE" != "200" ] || [ -z "$KC_BODY" ]; then\n'
+        f'  echo "ERROR: Keycloak auth failed (HTTP $KC_HTTP_CODE). Check URL and credentials." >&2\n'
+        f'  echo "Response: $KC_BODY" >&2\n'
+        f'  exit 1\n'
+        f'fi\n'
+        f"KC_TOKEN=$(echo \"$KC_BODY\" | python3 -c \"import sys,json; print(json.load(sys.stdin)['access_token'])\")"
     )
 
 
@@ -233,13 +241,14 @@ def kc_create_user():
         "credentials": [{"type": "password", "value": d["new_password"], "temporary": d.get("temp_password", False)}],
         "requiredActions": d.get("required_actions", []),
     })
+    target_realm = d.get("target_realm", d.get("realm", "master"))
     cmd = f"""
 {token_cmd}
-CODE=$(curl -s -o /dev/null -w "%{{http_code}}" -X POST "{d['url']}/admin/realms/{d['realm']}/users" \\
+CODE=$(curl -s -o /dev/null -w "%{{http_code}}" -X POST "{d['url']}/admin/realms/{target_realm}/users" \\
   -H "Authorization: Bearer $KC_TOKEN" \\
   -H "Content-Type: application/json" \\
   -d '{user_json}')
-echo "User {d['new_username']}: HTTP $CODE"
+echo "User '{d['new_username']}': HTTP $CODE (realm: {target_realm})"
 """
     return jsonify({"job_id": start_job(cmd)})
 
@@ -272,33 +281,27 @@ fi
 @app.route("/api/kc/create-users-batch", methods=["POST"])
 def kc_create_users_batch():
     d = request.json
-    token_cmd = kc_token_snippet(d["url"], d["username"], d["password"])
-    users = [
-        {"username": "edy", "email": "edy@example.com", "firstName": "Edy", "lastName": "Molina",
-         "enabled": True, "emailVerified": True,
-         "credentials": [{"type": "password", "value": "Test1234!", "temporary": False}],
-         "requiredActions": ["CONFIGURE_TOTP"]},
-        {"username": "admin-user", "email": "admin@example.com", "firstName": "Admin", "lastName": "User",
-         "enabled": True, "emailVerified": True,
-         "credentials": [{"type": "password", "value": "Admin1234!", "temporary": False}],
-         "requiredActions": []},
-        {"username": "free-user", "email": "free@example.com", "firstName": "Jan", "lastName": "Kowalski",
-         "enabled": True, "emailVerified": True,
-         "credentials": [{"type": "password", "value": "Test1234!", "temporary": False}],
-         "requiredActions": []},
-        {"username": "newuser", "email": "newuser@example.com", "firstName": "New", "lastName": "User",
-         "enabled": True, "emailVerified": False,
-         "credentials": [{"type": "password", "value": "Test1234!", "temporary": False}],
-         "requiredActions": ["VERIFY_EMAIL", "CONFIGURE_TOTP"]},
-    ]
+    target_realm = d.get("target_realm", d.get("realm", "master"))
+    users = d.get("users", [])
+    if not users:
+        return jsonify({"error": "No users provided"}), 400
     cmds = ""
     for u in users:
-        uj = json.dumps(u)
+        user_json = json.dumps({
+            "username": u["username"],
+            "email": u.get("email", ""),
+            "firstName": u.get("firstName", ""),
+            "lastName": u.get("lastName", ""),
+            "enabled": True,
+            "emailVerified": u.get("emailVerified", True),
+            "credentials": [{"type": "password", "value": u.get("password", ""), "temporary": u.get("temporary", False)}],
+            "requiredActions": [],
+        })
         cmds += f"""
 {kc_token_snippet(d['url'], d['username'], d['password'])}
-CODE=$(curl -s -o /dev/null -w "%{{http_code}}" -X POST "{d['url']}/admin/realms/{d['realm']}/users" \\
+CODE=$(curl -s -o /dev/null -w "%{{http_code}}" -X POST "{d['url']}/admin/realms/{target_realm}/users" \\
   -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \\
-  -d '{uj}')
+  -d '{user_json}')
 echo "{u['username']}: HTTP $CODE"
 """
     return jsonify({"job_id": start_job(cmds)})
@@ -308,13 +311,13 @@ echo "{u['username']}: HTTP $CODE"
 def kc_search_all_realms():
     d = request.json
     token_cmd = kc_token_snippet(d["url"], d["username"], d["password"])
-    realms = d.get("realms", ["master", "my-realm-1", "my-realm"])
-    cmds = token_cmd + "\n"
-    for r in realms:
-        cmds += f"""
-echo "=== {r} ==="
-curl -s "{d['url']}/admin/realms/{r}/users?email={d['email']}" \\
-  -H "Authorization: Bearer $KC_TOKEN" | python3 -c "
+    cmd = f"""
+{token_cmd}
+REALMS=$(curl -s "{d['url']}/admin/realms" -H "Authorization: Bearer $KC_TOKEN" | python3 -c "import sys,json; [print(r['realm']) for r in json.load(sys.stdin)]")
+for REALM in $REALMS; do
+  echo "=== $REALM ==="
+  curl -s "{d['url']}/admin/realms/$REALM/users?email={d['email']}" \\
+    -H "Authorization: Bearer $KC_TOKEN" | python3 -c "
 import sys,json
 try:
     users=json.load(sys.stdin)
@@ -322,8 +325,9 @@ try:
     else: [print(f\\"  {{u['id']}} — {{u.get('email','-')}} — {{u.get('username','-')}}\\") for u in users]
 except: print('  (access denied or error)')
 "
+done
 """
-    return jsonify({"job_id": start_job(cmds)})
+    return jsonify({"job_id": start_job(cmd)})
 
 
 # ── Keycloak: Roles ──────────────────────────────────────────
@@ -332,19 +336,16 @@ except: print('  (access denied or error)')
 @app.route("/api/kc/create-roles", methods=["POST"])
 def kc_create_roles():
     d = request.json
-    token_cmd = kc_token_snippet(d["url"], d["username"], d["password"])
-    roles = [
-        ("ROLE_USER", "Free/trial tier user"),
-        ("ROLE_PREMIUM_USER", "Paying investor with full access"),
-        ("ROLE_ANALYST", "Internal operations analyst"),
-        ("ROLE_ADMIN", "Platform administrator"),
-        ("ROLE_SUPER_ADMIN", "Platform owner - highest privilege"),
-    ]
-    cmds = token_cmd + "\n"
-    for name, desc in roles:
-        rj = json.dumps({"name": name, "description": desc})
+    target_realm = d.get("target_realm", d.get("realm", "master"))
+    roles = d.get("roles", [])
+    if not roles:
+        return jsonify({"error": "No roles provided"}), 400
+    cmds = f"{kc_token_snippet(d['url'], d['username'], d['password'])}\n"
+    for role in roles:
+        name = role["name"]
+        rj = json.dumps({"name": name, "description": role.get("description", "")})
         cmds += f"""
-CODE=$(curl -s -o /dev/null -w "%{{http_code}}" -X POST "{d['url']}/admin/realms/{d['realm']}/roles" \\
+CODE=$(curl -s -o /dev/null -w "%{{http_code}}" -X POST "{d['url']}/admin/realms/{target_realm}/roles" \\
   -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \\
   -d '{rj}')
 echo "{name}: HTTP $CODE"
@@ -387,30 +388,30 @@ echo "{target_user} roles ({', '.join(roles)}): HTTP $CODE"
 @app.route("/api/kc/assign-roles-batch", methods=["POST"])
 def kc_assign_roles_batch():
     d = request.json
-    assignments = [
-        ("edy", ["ROLE_USER", "ROLE_PREMIUM_USER"]),
-        ("admin-user", ["ROLE_USER", "ROLE_PREMIUM_USER", "ROLE_ADMIN", "ROLE_SUPER_ADMIN"]),
-        ("free-user", ["ROLE_USER"]),
-        ("newuser", ["ROLE_USER"]),
-    ]
+    target_realm = d.get("target_realm", d.get("realm", "master"))
+    assignments = d.get("assignments", [])
+    if not assignments:
+        return jsonify({"error": "No assignments provided"}), 400
     cmds = ""
-    for user, roles in assignments:
+    for entry in assignments:
+        user = entry["username"]
+        roles = entry["roles"]
         token_cmd = kc_token_snippet(d["url"], d["username"], d["password"])
         role_fetch = ""
         role_vars = []
         for i, r in enumerate(roles):
             var = f"R{i}"
-            role_fetch += f'{var}=$(curl -s "{d["url"]}/admin/realms/{d["realm"]}/roles/{r}" -H "Authorization: Bearer $KC_TOKEN")\n'
+            role_fetch += f'{var}=$(curl -s "{d["url"]}/admin/realms/{target_realm}/roles/{r}" -H "Authorization: Bearer $KC_TOKEN")\n'
             role_vars.append(f"${var}")
         role_array = "[" + ",".join(role_vars) + "]"
         cmds += f"""
 {token_cmd}
-UID=$(curl -s "{d['url']}/admin/realms/{d['realm']}/users?username={user}&exact=true" \\
+UID=$(curl -s "{d['url']}/admin/realms/{target_realm}/users?username={user}&exact=true" \\
   -H "Authorization: Bearer $KC_TOKEN" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d[0]['id'] if d else '')" 2>/dev/null)
 if [ -z "$UID" ]; then echo "{user}: NOT FOUND"; else
 {role_fetch}
 CODE=$(curl -s -o /dev/null -w "%{{http_code}}" -X POST \\
-  "{d['url']}/admin/realms/{d['realm']}/users/$UID/role-mappings/realm" \\
+  "{d['url']}/admin/realms/{target_realm}/users/$UID/role-mappings/realm" \\
   -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \\
   -d "{role_array}")
 echo "{user} ({', '.join(roles)}): HTTP $CODE"
@@ -433,7 +434,7 @@ def kc_create_realm():
         "registrationAllowed": True,
         "resetPasswordAllowed": True,
         "rememberMe": True,
-        "verifyEmail": True,
+        "verifyEmail": d.get("verify_email", "false") == "true",
         "loginWithEmailAllowed": True,
         "duplicateEmailsAllowed": False,
         "bruteForceProtected": True,
@@ -462,12 +463,53 @@ def kc_create_realm():
             "user": d.get("smtp_user", d.get("smtp_from", "info@example.com")),
         },
     })
+    client_cmd = ""
+    if d.get("client_id"):
+        client_type = d.get("client_type", "confidential")
+        is_public = client_type == "public"
+        root_url = d.get("root_url", "http://localhost:3000")
+        web_origins = d.get("web_origins", root_url)
+        client_json = json.dumps({
+            "clientId": d["client_id"],
+            "name": d.get("client_name", d["client_id"]),
+            "enabled": True,
+            "publicClient": is_public,
+            "standardFlowEnabled": True,
+            "directAccessGrantsEnabled": True,
+            "serviceAccountsEnabled": not is_public,
+            "rootUrl": root_url,
+            "baseUrl": root_url,
+            "redirectUris": [f"{root_url}/*"],
+            "webOrigins": [o.strip() for o in web_origins.split(",")],
+            "protocol": "openid-connect",
+            **({"attributes": {"pkce.code.challenge.method": "S256", "post.logout.redirect.uris": f"{root_url}/*"}} if is_public else {}),
+            **({"secret": d["client_secret"]} if not is_public and d.get("client_secret") else {}),
+        })
+        client_cmd = f"""
+echo ""
+echo "--- Creating client '{d['client_id']}' ---"
+{kc_token_snippet(d['url'], d['username'], d['password'])}
+CODE=$(curl -s -o /dev/null -w "%{{http_code}}" -X POST "{d['url']}/admin/realms/{d['realm_name']}/clients" \\
+  -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \\
+  -d '{client_json}')
+echo "Client '{d['client_id']}': HTTP $CODE"
+
+if [ "$CODE" = "201" ] || [ "$CODE" = "409" ]; then
+  {kc_token_snippet(d['url'], d['username'], d['password'])}
+  CLIENT_DATA=$(curl -s "{d['url']}/admin/realms/{d['realm_name']}/clients?clientId={d['client_id']}" \\
+    -H "Authorization: Bearer $KC_TOKEN")
+  echo "Client UUID: $(echo "$CLIENT_DATA" | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])" 2>/dev/null)"
+  SECRET=$(echo "$CLIENT_DATA" | python3 -c "import sys,json; c=json.load(sys.stdin)[0]; print(c.get('secret','(fetch from Keycloak Credentials tab)'))" 2>/dev/null)
+  echo "Client Secret: $SECRET"
+fi
+"""
     cmd = f"""
 {token_cmd}
 CODE=$(curl -s -o /dev/null -w "%{{http_code}}" -X POST "{d['url']}/admin/realms" \\
   -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \\
   -d '{realm_json}')
 echo "Realm '{d['realm_name']}': HTTP $CODE"
+{client_cmd}
 """
     return jsonify({"job_id": start_job(cmd)})
 
@@ -507,6 +549,197 @@ echo "Users can enable 2FA at: {d['url']}/realms/{d['realm']}/account/#/security
 
 
 # ── Keycloak: Clients ────────────────────────────────────────
+
+
+@app.route("/api/kc/create-client-custom", methods=["POST"])
+def kc_create_client_custom():
+    d = request.json
+    token_cmd = kc_token_snippet(d["url"], d["username"], d["password"])
+    client_type = d.get("client_type", "confidential")
+    is_public = client_type == "public"
+    root_url = d.get("root_url", "http://localhost:3000")
+    web_origins = d.get("web_origins", root_url)
+    client_json = json.dumps({
+        "clientId": d["client_id"],
+        "name": d.get("client_name", d["client_id"]),
+        "enabled": True,
+        "publicClient": is_public,
+        "standardFlowEnabled": True,
+        "directAccessGrantsEnabled": True,
+        "serviceAccountsEnabled": not is_public,
+        "rootUrl": root_url,
+        "baseUrl": root_url,
+        "redirectUris": [f"{root_url}/*"],
+        "webOrigins": [o.strip() for o in web_origins.split(",")],
+        "protocol": "openid-connect",
+        **({"attributes": {"pkce.code.challenge.method": "S256", "post.logout.redirect.uris": f"{root_url}/*"}} if is_public else {}),
+    })
+    target_realm = d.get("target_realm", d.get("realm", "master"))
+    cmd = f"""
+{token_cmd}
+CODE=$(curl -s -o /dev/null -w "%{{http_code}}" -X POST "{d['url']}/admin/realms/{target_realm}/clients" \\
+  -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \\
+  -d '{client_json}')
+echo "{d['client_id']}: HTTP $CODE (realm: {target_realm})"
+
+if [ "$CODE" = "201" ] || [ "$CODE" = "409" ]; then
+  {kc_token_snippet(d['url'], d['username'], d['password'])}
+  CLIENT_UUID=$(curl -s "{d['url']}/admin/realms/{target_realm}/clients?clientId={d['client_id']}" \\
+    -H "Authorization: Bearer $KC_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin)[0]['id'])" 2>/dev/null)
+  echo ""
+  echo "Client UUID: $CLIENT_UUID"
+  SECRET=$(curl -s "{d['url']}/admin/realms/{target_realm}/clients/$CLIENT_UUID/client-secret" \\
+    -H "Authorization: Bearer $KC_TOKEN" | python3 -c "import sys,json; print(json.load(sys.stdin).get('value','(none)'))" 2>/dev/null)
+  echo "Client Secret: $SECRET"
+fi
+"""
+    return jsonify({"job_id": start_job(cmd)})
+
+
+@app.route("/api/kc/client-roles", methods=["POST"])
+def kc_client_roles():
+    d = request.json
+    action = d.get("action", "list")
+    target_realm = d.get("target_realm", d.get("realm", "master"))
+    import subprocess
+
+    # Get token
+    token_result = subprocess.run(
+        ["curl", "-sf", "-X", "POST",
+         f"{d['url']}/realms/master/protocol/openid-connect/token",
+         "-H", "Content-Type: application/x-www-form-urlencoded",
+         "-d", f"username={d['username']}",
+         "-d", f"password={d['password']}",
+         "-d", "grant_type=password",
+         "-d", "client_id=admin-cli"],
+        capture_output=True, text=True, timeout=10
+    )
+    try:
+        token = json.loads(token_result.stdout)["access_token"]
+    except Exception:
+        return jsonify({"error": "Auth failed"})
+
+    auth_header = f"Authorization: Bearer {token}"
+
+    # Get target client UUID
+    r = subprocess.run(["curl", "-s", f"{d['url']}/admin/realms/{target_realm}/clients?clientId={d['client_id']}", "-H", auth_header], capture_output=True, text=True, timeout=10)
+    try:
+        client_uuid = json.loads(r.stdout)[0]["id"]
+    except Exception:
+        return jsonify({"error": f"Client '{d.get('client_id', '')}' not found in realm '{target_realm}'"})
+
+    # Get realm-management client UUID
+    r = subprocess.run(["curl", "-s", f"{d['url']}/admin/realms/{target_realm}/clients?clientId=realm-management", "-H", auth_header], capture_output=True, text=True, timeout=10)
+    try:
+        rm_uuid = json.loads(r.stdout)[0]["id"]
+    except Exception:
+        return jsonify({"error": "realm-management client not found"})
+
+    # Get service account user
+    r = subprocess.run(["curl", "-s", f"{d['url']}/admin/realms/{target_realm}/clients/{client_uuid}/service-account-user", "-H", auth_header], capture_output=True, text=True, timeout=10)
+    try:
+        sa_user_id = json.loads(r.stdout)["id"]
+    except Exception:
+        return jsonify({"error": "No service account found — is 'Service accounts roles' enabled on this client?"})
+
+    if action == "list":
+        # Get current client role mappings for realm-management
+        r = subprocess.run(["curl", "-s", f"{d['url']}/admin/realms/{target_realm}/users/{sa_user_id}/role-mappings/clients/{rm_uuid}", "-H", auth_header], capture_output=True, text=True, timeout=10)
+        current = json.loads(r.stdout) if r.stdout else []
+
+        # Get all available realm-management roles
+        r = subprocess.run(["curl", "-s", f"{d['url']}/admin/realms/{target_realm}/clients/{rm_uuid}/roles", "-H", auth_header], capture_output=True, text=True, timeout=10)
+        available = json.loads(r.stdout) if r.stdout else []
+
+        return jsonify({
+            "current": [{"name": r["name"]} for r in current],
+            "available": [{"name": r["name"]} for r in available],
+            "sa_user_id": sa_user_id,
+            "rm_uuid": rm_uuid,
+        })
+
+    elif action == "assign":
+        roles = d.get("roles", [])
+        token_cmd = kc_token_snippet(d["url"], d["username"], d["password"])
+        role_fetch = ""
+        role_vars = []
+        for i, r in enumerate(roles):
+            var = f"R{i}"
+            role_fetch += f'{var}=$(curl -s "{d["url"]}/admin/realms/{target_realm}/clients/{rm_uuid}/roles/{r}" -H "Authorization: Bearer $KC_TOKEN")\n'
+            role_vars.append(f"${var}")
+        role_array = "[" + ",".join(role_vars) + "]"
+        cmd = f"""
+{token_cmd}
+echo "Assigning realm-management roles to service account..."
+{role_fetch}
+CODE=$(curl -s -o /dev/null -w "%{{http_code}}" -X POST \\
+  "{d['url']}/admin/realms/{target_realm}/users/{sa_user_id}/role-mappings/clients/{rm_uuid}" \\
+  -H "Authorization: Bearer $KC_TOKEN" -H "Content-Type: application/json" \\
+  -d "{role_array}")
+echo "Assign roles ({', '.join(roles)}): HTTP $CODE"
+"""
+        return jsonify({"job_id": start_job(cmd)})
+
+    return jsonify({"error": "Unknown action"})
+
+
+@app.route("/api/kc/list-clients", methods=["POST"])
+def kc_list_clients():
+    d = request.json
+    import subprocess
+    # Get token
+    token_result = subprocess.run(
+        ["curl", "-sf", "-X", "POST",
+         f"{d['url']}/realms/master/protocol/openid-connect/token",
+         "-H", "Content-Type: application/x-www-form-urlencoded",
+         "-d", f"username={d['username']}",
+         "-d", f"password={d['password']}",
+         "-d", "grant_type=password",
+         "-d", "client_id=admin-cli"],
+        capture_output=True, text=True, timeout=10
+    )
+    try:
+        token = json.loads(token_result.stdout)["access_token"]
+    except Exception:
+        return jsonify({"clients": [], "error": "Auth failed"})
+    # List clients
+    target_realm = d.get("target_realm", d.get("realm", "master"))
+    clients_result = subprocess.run(
+        ["curl", "-s",
+         f"{d['url']}/admin/realms/{target_realm}/clients",
+         "-H", f"Authorization: Bearer {token}"],
+        capture_output=True, text=True, timeout=10
+    )
+    try:
+        clients = json.loads(clients_result.stdout)
+        # Filter out Keycloak internal clients
+        filtered = [{"clientId": c["clientId"], "name": c.get("name", ""), "protocol": c.get("protocol", "")}
+                     for c in clients if not c.get("clientId", "").startswith(("account", "admin-cli", "broker", "realm-management", "security-admin"))]
+        return jsonify({"clients": filtered})
+    except Exception:
+        return jsonify({"clients": [], "error": "Failed to parse clients"})
+
+
+@app.route("/api/kc/delete-client", methods=["POST"])
+def kc_delete_client():
+    d = request.json
+    token_cmd = kc_token_snippet(d["url"], d["username"], d["password"])
+    client_id = d["client_id"]
+    target_realm = d.get("target_realm", d.get("realm", "master"))
+    cmd = f"""
+{token_cmd}
+CLIENT_UUID=$(curl -s "{d['url']}/admin/realms/{target_realm}/clients?clientId={client_id}" \\
+  -H "Authorization: Bearer $KC_TOKEN" | python3 -c "import sys,json; data=json.load(sys.stdin); print(data[0]['id'] if data else '')" 2>/dev/null)
+if [ -z "$CLIENT_UUID" ]; then
+  echo "Client '{client_id}' not found in realm '{target_realm}'"
+  exit 1
+fi
+echo "Found client UUID: $CLIENT_UUID"
+CODE=$(curl -s -o /dev/null -w "%{{http_code}}" -X DELETE "{d['url']}/admin/realms/{target_realm}/clients/$CLIENT_UUID" \\
+  -H "Authorization: Bearer $KC_TOKEN")
+echo "Delete '{client_id}': HTTP $CODE"
+"""
+    return jsonify({"job_id": start_job(cmd)})
 
 
 @app.route("/api/kc/create-clients", methods=["POST"])
