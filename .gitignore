@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.venv
+
+# Node
+node_modules/
+.next/
+
+# Data / secrets
+data/
+.env
+*.db
+*.db-journal
+.claude/

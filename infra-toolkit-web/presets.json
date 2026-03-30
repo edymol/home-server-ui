@@ -1,0 +1,71 @@
+{
+  "keycloak_urls": [
+    "https://keycloak.example.com"
+  ],
+  "keycloak_realms": [
+    "master",
+    "my-realm-1",
+    "my-realm"
+  ],
+  "keycloak_usernames": [
+    "admin"
+  ],
+  "keycloak_passwords": [],
+  "jenkins_urls": [
+    "https://jenkins.example.com"
+  ],
+  "jenkins_usernames": [
+    "admin"
+  ],
+  "jenkins_passwords": [],
+  "ssh_hosts": [
+    "10.0.0.30"
+  ],
+  "ssh_kc_ports": [
+    "8090",
+    "8080"
+  ],
+  "s3_access_keys": [],
+  "s3_secret_keys": [],
+  "s3_endpoints": [
+    "https://s3.example.com"
+  ],
+  "s3_buckets": [
+    "my-bucket"
+  ],
+  "db_hosts": [
+    "local"
+  ],
+  "db_containers": [
+    "my-db-container"
+  ],
+  "db_users": [
+    "my-db-user"
+  ],
+  "db_names": [
+    "my_database"
+  ],
+  "spa_urls": [
+    "http://localhost:4200",
+    "https://invest.example.com"
+  ],
+  "git_repos": [
+    "git@github.com:your-org/your-repo.git"
+  ],
+  "jenkins_cred_ids": [
+    "jenkins-github-ssh"
+  ],
+  "cors_origins": [
+    "https://example.com",
+    "https://www.example.com",
+    "https://staging.example.com"
+  ],
+  "google_client_ids": [],
+  "google_client_secrets": [],
+  "smtp_hosts": [
+    "smtp.example.com"
+  ],
+  "smtp_froms": [
+    "info@example.com"
+  ]
+}

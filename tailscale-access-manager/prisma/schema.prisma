@@ -1,0 +1,97 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id        String     @id @default(cuid())
+  name      String
+  email     String     @unique
+  role      Role       @default(DEVELOPER)
+  status    Status     @default(ACTIVE)
+  expiresAt DateTime?
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  rules     Rule[]
+  auditLogs AuditLog[] @relation("AuditUser")
+}
+
+model Rule {
+  id         String     @id @default(cuid())
+  userId     String
+  user       User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetType TargetType
+  targetId   String
+  ports      String     // JSON array: [22, 80, 443]
+  createdAt  DateTime   @default(now())
+}
+
+model Node {
+  id     String @id
+  name   String
+  ip     String
+  status String @default("online")
+}
+
+model Container {
+  id       String  @id
+  name     String
+  ip       String
+  nodeId   String
+  vmid     Int
+  critical Boolean @default(false)
+  kind     String  @default("ct")
+}
+
+model AuditLog {
+  id        String   @id @default(cuid())
+  userId    String?
+  user      User?    @relation("AuditUser", fields: [userId], references: [id], onDelete: SetNull)
+  action    String
+  severity  Severity @default(INFO)
+  metadata  String?
+  ip        String?
+  createdAt DateTime @default(now())
+}
+
+model ACLSnapshot {
+  id        String   @id @default(cuid())
+  aclJson   String
+  etag      String?
+  pushedBy  String?
+  createdAt DateTime @default(now())
+}
+
+model AppState {
+  key   String @id
+  value String
+}
+
+enum Role {
+  VIEWER
+  DEVELOPER
+  MAINTAINER
+  ADMIN
+}
+
+enum Status {
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+}
+
+enum TargetType {
+  NODE
+  LXC
+  ALL
+}
+
+enum Severity {
+  INFO
+  WARN
+  ERROR
+}
